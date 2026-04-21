@@ -1,0 +1,11 @@
+# ============================================================================
+# FuzzStrike Target Environment — Python Dependencies
+# ============================================================================
+# Minimal dependencies for the target server and telemetry agent.
+# ============================================================================
+
+# HTTP client for telemetry reporting to C2
+requests==2.31.0
+
+# Process monitoring (cross-platform process and system utilities)
+psutil==5.9.8

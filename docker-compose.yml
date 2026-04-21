@@ -1,0 +1,135 @@
+# ============================================================================
+# FuzzStrike — Docker Compose Orchestration
+# ============================================================================
+# Brings up the entire distributed fuzzing stack:
+#   1. c2-orchestrator  (FastAPI, port 9000)
+#   2. attack-node      (Java/Netty, polls C2 for batches)
+#   3. target           (Vulnerable TCP server, port 7777)
+#   4. dashboard        (Static HTML served via nginx, port 8080)
+#
+# Usage:
+#   docker-compose up --build        # Build and start all services
+#   docker-compose down -v           # Tear down and remove volumes
+# ============================================================================
+
+version: "3.9"
+
+services:
+
+  # --------------------------------------------------------------------------
+  # Module A: C2 Orchestrator — The Brain
+  # --------------------------------------------------------------------------
+  # FastAPI server that manages campaigns, mutates payloads, and ingests
+  # crash telemetry. Exposes REST API on port 9000.
+  # --------------------------------------------------------------------------
+  c2-orchestrator:
+    build:
+      context: ./c2-orchestrator
+      dockerfile: Dockerfile
+    container_name: fuzzstrike-c2
+    ports:
+      - "9000:9000"
+    volumes:
+      # Persist SQLite database across container restarts
+      - c2-data:/app/data
+    environment:
+      - FUZZSTRIKE_ENV=docker
+      - FUZZSTRIKE_DB_PATH=/app/data/fuzzstrike.db
+      - FUZZSTRIKE_LOG_LEVEL=INFO
+    networks:
+      - fuzznet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Module B: Attack Node — The Muscle
+  # --------------------------------------------------------------------------
+  # Java 17 / Netty 4.1 high-throughput TCP client. Polls the C2 server
+  # for payload batches and fires them asynchronously at the target.
+  # --------------------------------------------------------------------------
+  attack-node:
+    build:
+      context: ./attack-node
+      dockerfile: Dockerfile
+    container_name: fuzzstrike-attack
+    environment:
+      - C2_BASE_URL=http://c2-orchestrator:9000
+      - TARGET_HOST=target
+      - TARGET_PORT=7777
+      - BATCH_SIZE=50
+      - POLL_INTERVAL_MS=2000
+    depends_on:
+      c2-orchestrator:
+        condition: service_healthy
+      target:
+        condition: service_started
+    networks:
+      - fuzznet
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Module C: Target Environment — The Eye
+  # --------------------------------------------------------------------------
+  # A deliberately vulnerable TCP server that crashes on payloads > 1MB.
+  # The telemetry agent (agent.py) runs alongside, monitoring process health
+  # and reporting crash events back to the C2 orchestrator.
+  # --------------------------------------------------------------------------
+  target:
+    build:
+      context: ./target-env
+      dockerfile: Dockerfile
+    container_name: fuzzstrike-target
+    ports:
+      - "7777:7777"
+    environment:
+      - C2_TELEMETRY_URL=http://c2-orchestrator:9000/api/v1/telemetry/crash
+      - TARGET_PORT=7777
+      - MEMORY_POLL_INTERVAL_MS=500
+    depends_on:
+      c2-orchestrator:
+        condition: service_healthy
+    networks:
+      - fuzznet
+    # Note: No restart policy — we WANT to detect crashes
+    restart: "no"
+
+  # --------------------------------------------------------------------------
+  # Module D: Dashboard — The UI
+  # --------------------------------------------------------------------------
+  # Lightweight nginx container serving the Glassmorphism SPA dashboard.
+  # Proxies API calls to the C2 orchestrator for CORS-free communication.
+  # --------------------------------------------------------------------------
+  dashboard:
+    image: nginx:alpine
+    container_name: fuzzstrike-dashboard
+    ports:
+      - "8080:80"
+    volumes:
+      - ./dashboard:/usr/share/nginx/html:ro
+      - ./dashboard/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - c2-orchestrator
+    networks:
+      - fuzznet
+    restart: unless-stopped
+
+# ============================================================================
+# Network — Isolated bridge network for all FuzzStrike components
+# ============================================================================
+networks:
+  fuzznet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# ============================================================================
+# Volumes — Persistent data storage
+# ============================================================================
+volumes:
+  c2-data:
+    driver: local

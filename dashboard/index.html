@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- ================================================================
+         FuzzStrike Dashboard — Glassmorphism Real-Time Monitoring UI
+         ================================================================
+         A premium, single-page dashboard for monitoring distributed
+         fuzzing campaigns in real-time. Features:
+           - Live metrics cards (payloads sent, crashes, rate)
+           - Campaign control panel (create, start, stop)
+           - Animated attack throughput chart (Canvas-based)
+           - Crash triage table with severity badges
+           - Fully responsive Glassmorphism design system
+         ================================================================ -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="FuzzStrike — Distributed Protocol Fuzzing Dashboard. Real-time monitoring of attack campaigns, payload mutations, and crash telemetry.">
+    <meta name="theme-color" content="#0a0e1a">
+
+    <title>FuzzStrike — Distributed Fuzzing Dashboard</title>
+
+    <!-- Google Fonts — Inter for clean UI typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- ================================================================
+         Background — Animated gradient mesh
+         ================================================================ -->
+    <div class="bg-mesh" aria-hidden="true">
+        <div class="bg-orb bg-orb--1"></div>
+        <div class="bg-orb bg-orb--2"></div>
+        <div class="bg-orb bg-orb--3"></div>
+    </div>
+
+    <!-- ================================================================
+         Header — Navigation & Status
+         ================================================================ -->
+    <header class="header" id="header">
+        <div class="header__brand">
+            <div class="header__logo" aria-hidden="true">
+                <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                    <circle cx="16" cy="16" r="14" stroke="url(#logo-grad)" stroke-width="2.5"/>
+                    <path d="M10 16L14 20L22 12" stroke="url(#logo-grad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <defs>
+                        <linearGradient id="logo-grad" x1="0" y1="0" x2="32" y2="32">
+                            <stop stop-color="#6366f1"/>
+                            <stop offset="1" stop-color="#ec4899"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+            </div>
+            <h1 class="header__title">FuzzStrike</h1>
+            <span class="header__version">v1.0.0</span>
+        </div>
+
+        <div class="header__status" id="c2-status">
+            <span class="status-dot status-dot--checking" id="status-dot"></span>
+            <span class="status-text" id="status-text">Connecting...</span>
+        </div>
+    </header>
+
+    <!-- ================================================================
+         Main Dashboard Content
+         ================================================================ -->
+    <main class="dashboard" id="dashboard">
+
+        <!-- ────────────────────────────────────────────────────────────
+             Section 1: Live Metrics Cards
+             ──────────────────────────────────────────────────────────── -->
+        <section class="metrics" id="metrics-section" aria-label="Live Metrics">
+            <div class="metric-card glass" id="metric-campaigns">
+                <div class="metric-card__icon metric-card__icon--purple">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                </div>
+                <div class="metric-card__data">
+                    <span class="metric-card__value" id="metric-total-campaigns">0</span>
+                    <span class="metric-card__label">Total Campaigns</span>
+                </div>
+                <div class="metric-card__sub" id="metric-active-campaigns">0 active</div>
+            </div>
+
+            <div class="metric-card glass" id="metric-payloads">
+                <div class="metric-card__icon metric-card__icon--blue">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                </div>
+                <div class="metric-card__data">
+                    <span class="metric-card__value" id="metric-payloads-sent">0</span>
+                    <span class="metric-card__label">Payloads Sent</span>
+                </div>
+                <div class="metric-card__sub" id="metric-payloads-generated">0 generated</div>
+            </div>
+
+            <div class="metric-card glass" id="metric-crashes">
+                <div class="metric-card__icon metric-card__icon--red">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                </div>
+                <div class="metric-card__data">
+                    <span class="metric-card__value" id="metric-crashes-detected">0</span>
+                    <span class="metric-card__label">Crashes Detected</span>
+                </div>
+                <div class="metric-card__sub" id="metric-crash-rate">0% crash rate</div>
+            </div>
+
+            <div class="metric-card glass" id="metric-rate">
+                <div class="metric-card__icon metric-card__icon--green">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                </div>
+                <div class="metric-card__data">
+                    <span class="metric-card__value" id="metric-throughput">0</span>
+                    <span class="metric-card__label">Payloads/sec</span>
+                </div>
+                <div class="metric-card__sub" id="metric-uptime">0s uptime</div>
+            </div>
+        </section>
+
+        <!-- ────────────────────────────────────────────────────────────
+             Section 2: Campaign Control + Live Chart
+             ──────────────────────────────────────────────────────────── -->
+        <section class="panels" id="panels-section">
+
+            <!-- Campaign Control Panel -->
+            <div class="panel glass" id="control-panel">
+                <div class="panel__header">
+                    <h2 class="panel__title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="panel__title-icon"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.32 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+                        Campaign Control
+                    </h2>
+                </div>
+
+                <form class="control-form" id="campaign-form" autocomplete="off">
+                    <div class="form-group">
+                        <label class="form-label" for="campaign-name">Campaign Name</label>
+                        <input type="text" class="form-input glass-input" id="campaign-name" placeholder="e.g., Auth Endpoint Fuzz #1" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="seed-payload">Seed Payload (JSON)</label>
+                        <textarea class="form-textarea glass-input" id="seed-payload" rows="4" placeholder='{"username": "admin", "password": "secret", "role": 1}' required></textarea>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group form-group--half">
+                            <label class="form-label" for="target-host">Target Host</label>
+                            <input type="text" class="form-input glass-input" id="target-host" value="target" placeholder="hostname">
+                        </div>
+                        <div class="form-group form-group--half">
+                            <label class="form-label" for="target-port">Target Port</label>
+                            <input type="number" class="form-input glass-input" id="target-port" value="7777" min="1" max="65535">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="mutation-count">Mutation Count</label>
+                        <input type="range" class="form-range" id="mutation-count" min="10" max="500" value="50" step="10">
+                        <div class="form-range-value"><span id="mutation-count-display">50</span> payloads</div>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn--primary" id="btn-create-campaign">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            Create & Start
+                        </button>
+                        <button type="button" class="btn btn--danger" id="btn-stop-campaign" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                            Stop
+                        </button>
+                    </div>
+                </form>
+
+                <!-- Active Campaign Info -->
+                <div class="active-campaign" id="active-campaign" style="display: none;">
+                    <div class="active-campaign__header">
+                        <span class="pulse-dot"></span>
+                        <span class="active-campaign__name" id="active-campaign-name">—</span>
+                    </div>
+                    <div class="active-campaign__progress">
+                        <div class="progress-bar">
+                            <div class="progress-bar__fill" id="campaign-progress" style="width: 0%"></div>
+                        </div>
+                        <span class="progress-label" id="campaign-progress-label">0/0 payloads</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Attack Chart -->
+            <div class="panel glass" id="chart-panel">
+                <div class="panel__header">
+                    <h2 class="panel__title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="panel__title-icon"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                        Attack Throughput
+                    </h2>
+                    <div class="chart-legend">
+                        <span class="legend-item legend-item--sent">
+                            <span class="legend-dot"></span> Sent
+                        </span>
+                        <span class="legend-item legend-item--crash">
+                            <span class="legend-dot"></span> Crashes
+                        </span>
+                    </div>
+                </div>
+                <div class="chart-container" id="chart-container">
+                    <canvas id="attack-chart"></canvas>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- ────────────────────────────────────────────────────────────
+             Section 3: Crash Triage Table
+             ──────────────────────────────────────────────────────────── -->
+        <section class="triage" id="triage-section">
+            <div class="panel glass panel--full" id="triage-panel">
+                <div class="panel__header">
+                    <h2 class="panel__title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="panel__title-icon"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                        Crash Triage Log
+                    </h2>
+                    <span class="badge badge--count" id="crash-count-badge">0 crashes</span>
+                </div>
+
+                <div class="triage-table-wrapper">
+                    <table class="triage-table" id="triage-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Timestamp</th>
+                                <th>Severity</th>
+                                <th>Error Type</th>
+                                <th>Payload Size</th>
+                                <th>Memory (RSS)</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="triage-tbody">
+                            <tr class="triage-empty" id="triage-empty">
+                                <td colspan="7">
+                                    <div class="empty-state">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-state__icon"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                                        <p>No crashes detected yet. Start a campaign to begin fuzzing.</p>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ================================================================
+         Footer
+         ================================================================ -->
+    <footer class="footer" id="footer">
+        <span>FuzzStrike v1.0.0</span>
+        <span class="footer__sep">•</span>
+        <span>Distributed Protocol Fuzzing Platform</span>
+        <span class="footer__sep">•</span>
+        <span id="footer-time"></span>
+    </footer>
+
+    <!-- ================================================================
+         Toast Notification Container
+         ================================================================ -->
+    <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+<!-- ==========================================================================
+     Logback Configuration — FuzzStrike Attack Node
+     ==========================================================================
+     Structured console logging with MDC support for correlating payloads
+     to their campaign IDs during high-throughput attack operations.
+     ========================================================================== -->
+<configuration>
+
+    <!-- Console appender with structured pattern -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Netty internal logging — reduce noise -->
+    <logger name="io.netty" level="WARN" />
+
+    <!-- Application-level logging -->
+    <logger name="com.fuzzstrike" level="DEBUG" />
+
+    <!-- Root logger -->
+    <root level="INFO">
+        <appender-ref ref="STDOUT" />
+    </root>
+
+</configuration>
