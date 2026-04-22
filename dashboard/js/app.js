@@ -97,7 +97,10 @@ const Toast = {
  */
 const API = {
     /**
-     * Generic fetch wrapper with error handling.
+     * Generic fetch wrapper with error handling and timeout.
+     * Uses AbortController to cancel requests that take too long,
+     * preventing hung connections from stacking up and freezing the UI.
+     *
      * @param {string} endpoint - API endpoint (relative to API_BASE).
      * @param {object} options - Fetch options override.
      * @returns {Promise<any>} Parsed JSON response.
@@ -105,27 +108,48 @@ const API = {
     async request(endpoint, options = {}) {
         const url = `${CONFIG.API_BASE}${endpoint}`;
 
+        // AbortController with 5-second timeout prevents hung requests
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
         const defaults = {
             headers: {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json',
             },
+            signal: controller.signal,
         };
 
-        const response = await fetch(url, { ...defaults, ...options });
+        try {
+            const response = await fetch(url, { ...defaults, ...options });
+            clearTimeout(timeoutId);
 
-        if (!response.ok) {
-            const errorBody = await response.text();
-            throw new Error(`HTTP ${response.status}: ${errorBody}`);
+            if (!response.ok) {
+                const errorBody = await response.text();
+                throw new Error(`HTTP ${response.status}: ${errorBody}`);
+            }
+
+            return response.json();
+        } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') {
+                throw new Error('Request timed out');
+            }
+            throw err;
         }
-
-        return response.json();
     },
 
     // ── Health ────────────────────────────────────────────────────────
     async healthCheck() {
-        const resp = await fetch('/health');
-        return resp.ok;
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
+            const resp = await fetch('/health', { signal: controller.signal });
+            clearTimeout(timeoutId);
+            return resp.ok;
+        } catch {
+            return false;
+        }
     },
 
     // ── Campaigns ────────────────────────────────────────────────────
@@ -181,6 +205,11 @@ class AttackChart {
         this.canvas = document.getElementById(canvasId);
         this.ctx = this.canvas.getContext('2d');
 
+        // Use the FIXED dimensions from the HTML attributes (900x300).
+        // These never change — no ResizeObserver, no dynamic sizing.
+        this.width = this.canvas.width;
+        this.height = this.canvas.height;
+
         // Data stores — circular buffers of metric snapshots
         this.sentData = [];
         this.crashData = [];
@@ -197,31 +226,7 @@ class AttackChart {
         this.gridColor = 'rgba(99, 102, 241, 0.08)';
         this.labelColor = 'rgba(148, 163, 184, 0.6)';
 
-        // Handle resize
-        this.resizeObserver = new ResizeObserver(() => this.resize());
-        this.resizeObserver.observe(this.canvas.parentElement);
-        this.resize();
-
         // Initial empty render
-        this.render();
-    }
-
-    /**
-     * Handle canvas resize to maintain crisp rendering.
-     * Uses devicePixelRatio for high-DPI display support.
-     */
-    resize() {
-        const container = this.canvas.parentElement;
-        const dpr = window.devicePixelRatio || 1;
-        const rect = container.getBoundingClientRect();
-
-        this.canvas.width = rect.width * dpr;
-        this.canvas.height = rect.height * dpr;
-        this.ctx.scale(dpr, dpr);
-
-        this.width = rect.width;
-        this.height = rect.height;
-
         this.render();
     }
 
@@ -258,7 +263,7 @@ class AttackChart {
 
     /**
      * Render the chart on the canvas.
-     * Called on every data update and resize event.
+     * Uses fixed dimensions from HTML — no dynamic resizing.
      */
     render() {
         const ctx = this.ctx;
@@ -267,7 +272,6 @@ class AttackChart {
 
         if (!w || !h) return;
 
-        // Clear canvas
         ctx.clearRect(0, 0, w, h);
 
         // Chart area with padding
@@ -429,11 +433,15 @@ class DashboardApp {
         this.activeCampaignId = null;
         this.isPolling = false;
         this.pollTimer = null;
+        this.pollInFlight = false;  // Prevents overlapping poll cycles
         this.startTime = Date.now();
         this.knownCrashIds = new Set();
 
         // Chart instance
         this.chart = null;
+
+        // Cache the last crash data to diff against (prevents full table rebuild)
+        this._lastCrashJson = '';
 
         // DOM references (cached for performance)
         this.dom = {};
@@ -554,12 +562,25 @@ class DashboardApp {
         this.isPolling = true;
 
         const poll = async () => {
+            // Guard: skip if a previous poll is still running.
+            // This prevents overlapping fetches when the API is slow,
+            // which was causing DOM updates to collide and flash blank.
+            if (this.pollInFlight) {
+                if (this.isPolling) {
+                    this.pollTimer = setTimeout(poll, CONFIG.POLL_INTERVAL_MS);
+                }
+                return;
+            }
+
+            this.pollInFlight = true;
             try {
                 await this.fetchAndUpdateMetrics();
                 await this.fetchAndUpdateCrashes();
                 await this.checkC2Connection();
             } catch (err) {
                 console.warn('Poll error:', err.message);
+            } finally {
+                this.pollInFlight = false;
             }
 
             if (this.isPolling) {
@@ -685,7 +706,13 @@ class DashboardApp {
 
             if (crashes.length === 0) return;
 
-            // Update badge count
+            // ── Diff check: skip DOM work if data hasn't changed ──────
+            // Stringify the crash IDs to create a cheap fingerprint.
+            // If nothing changed since last poll, don't touch the DOM.
+            const crashFingerprint = crashes.map(c => c.id).join(',');
+            const dataChanged = crashFingerprint !== this._lastCrashJson;
+
+            // Update badge count (cheap, always safe)
             this.dom.crashCountBadge.textContent = `${crashes.length} crashes`;
 
             // Hide empty state
@@ -704,8 +731,11 @@ class DashboardApp {
                 }
             }
 
-            // Rebuild the table
-            this.renderCrashTable(crashes);
+            // Only rebuild the table if data actually changed
+            if (dataChanged) {
+                this._lastCrashJson = crashFingerprint;
+                this.renderCrashTable(crashes);
+            }
 
         } catch (err) {
             console.debug('Crash fetch failed:', err.message);
@@ -713,16 +743,43 @@ class DashboardApp {
     }
 
     /**
-     * Render crash reports into the triage table.
+     * Render crash reports into the triage table using DOM diffing.
+     *
+     * Instead of removing ALL rows and recreating them (which causes
+     * a visible blank flash), we diff by crash ID:
+     *   - Existing rows with matching IDs are left untouched
+     *   - New crashes get inserted with the entrance animation
+     *   - Removed crashes get deleted
      */
     renderCrashTable(crashes) {
-        // Keep empty state row, clear everything else
-        const rows = this.dom.triageTbody.querySelectorAll('tr:not(.triage-empty)');
-        rows.forEach(r => r.remove());
+        // Build a map of existing rows by crash ID for O(1) lookup
+        const existingRows = new Map();
+        const currentRows = this.dom.triageTbody.querySelectorAll('tr[data-crash-id]');
+        currentRows.forEach(row => {
+            existingRows.set(row.getAttribute('data-crash-id'), row);
+        });
 
+        // Build the new set of crash IDs
+        const newIds = new Set(crashes.map(c => String(c.id)));
+
+        // Remove rows that no longer exist in the data
+        existingRows.forEach((row, id) => {
+            if (!newIds.has(id)) {
+                row.remove();
+            }
+        });
+
+        // Insert or skip each crash
         for (const crash of crashes) {
+            const crashId = String(crash.id);
+
+            // Skip if this row already exists in the DOM
+            if (existingRows.has(crashId)) continue;
+
+            // Create a new row for this crash
             const row = document.createElement('tr');
-            row.className = this.knownCrashIds.size <= crashes.length ? '' : 'crash-new';
+            row.setAttribute('data-crash-id', crashId);
+            row.className = 'crash-new'; // entrance animation
 
             const severityClass = `badge--${crash.severity || 'medium'}`;
             const timestamp = new Date(crash.timestamp).toLocaleString('en-US', {
@@ -741,6 +798,7 @@ class DashboardApp {
                 <td><span class="payload-preview" title="${this.escapeHtml(crash.error_message || '')}">${this.escapeHtml((crash.error_message || '—').substring(0, 60))}</span></td>
             `;
 
+            // Insert before the empty-state row
             this.dom.triageTbody.insertBefore(row, this.dom.triageEmpty);
         }
     }
