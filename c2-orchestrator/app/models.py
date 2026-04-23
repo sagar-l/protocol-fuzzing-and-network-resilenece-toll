@@ -49,6 +49,34 @@ class CampaignStatus(str, enum.Enum):
     ERROR = "error"
 
 
+class FuzzProtocol(str, enum.Enum):
+    """
+    Supported network protocols for fuzzing.
+
+    Each protocol has a dedicated packet generator that produces
+    structurally valid but semantically corrupted packets.
+    """
+    TCP = "tcp"           # Raw TCP — JSON payload mutation (default)
+    DNS = "dns"           # UDP/53 — Malformed DNS queries
+    DHCP = "dhcp"         # UDP/67-68 — Fuzzed DHCP Discover/Request
+    OSPF = "ospf"         # IP Proto 89 — Corrupted OSPF Hello packets
+    LLDP = "lldp"         # Ethernet 0x88cc — Malformed LLDP TLV frames
+    RADIUS = "radius"     # UDP/1812 — Fuzzed Access-Request packets
+
+
+class FuzzDirection(str, enum.Enum):
+    """
+    Traffic directionality for fuzzing campaigns.
+
+    SRC_TO_DST   — Attack node sends to target (default)
+    DST_TO_SRC   — Target sends back to attack node
+    BIDIRECTIONAL— Both directions simultaneously
+    """
+    SRC_TO_DST = "src_to_dst"
+    DST_TO_SRC = "dst_to_src"
+    BIDIRECTIONAL = "bidirectional"
+
+
 class PayloadStatus(str, enum.Enum):
     """
     Delivery states for an individual mutated payload.
@@ -88,12 +116,29 @@ class Campaign(Base):
         index=True,
     )
 
-    # The original seed payload (JSON string)
+    # The original seed payload (JSON string or hex-encoded binary)
     seed_payload = Column(Text, nullable=False)
 
     # Target connection information
     target_host = Column(String(255), nullable=False, default="target")
     target_port = Column(Integer, nullable=False, default=7777)
+
+    # Source IP address (for directionality)
+    source_ip = Column(String(255), nullable=True, default=None)
+
+    # Protocol to fuzz (TCP, DNS, DHCP, OSPF, LLDP, RADIUS)
+    protocol = Column(
+        SQLEnum(FuzzProtocol),
+        default=FuzzProtocol.TCP,
+        nullable=False,
+    )
+
+    # Traffic direction
+    direction = Column(
+        SQLEnum(FuzzDirection),
+        default=FuzzDirection.SRC_TO_DST,
+        nullable=False,
+    )
 
     # Mutation configuration
     mutation_count = Column(Integer, nullable=False, default=50)
@@ -231,24 +276,36 @@ class CampaignCreate(BaseModel):
     )
     seed_payload: str = Field(
         ...,
-        description="JSON seed payload to mutate",
+        description="JSON seed payload to mutate (ignored for binary protocols)",
         examples=['{"username": "admin", "password": "secret123"}'],
     )
     target_host: str = Field(
         default="target",
-        description="Target hostname or IP address",
+        description="Destination hostname or IP address",
     )
     target_port: int = Field(
         default=7777,
         ge=1,
         le=65535,
-        description="Target TCP port",
+        description="Destination port",
+    )
+    source_ip: Optional[str] = Field(
+        default=None,
+        description="Source IP address for traffic origination",
+    )
+    protocol: FuzzProtocol = Field(
+        default=FuzzProtocol.TCP,
+        description="Network protocol to fuzz (TCP, DNS, DHCP, OSPF, LLDP, RADIUS)",
+    )
+    direction: FuzzDirection = Field(
+        default=FuzzDirection.SRC_TO_DST,
+        description="Traffic direction (src_to_dst, dst_to_src, bidirectional)",
     )
     mutation_count: int = Field(
         default=50,
         ge=1,
-        le=10000,
-        description="Number of mutated payloads to generate",
+        le=10000000,
+        description="Number of mutated payloads to generate (up to 10 million)",
     )
 
 
@@ -260,6 +317,9 @@ class CampaignOut(BaseModel):
     seed_payload: str
     target_host: str
     target_port: int
+    source_ip: Optional[str] = None
+    protocol: FuzzProtocol
+    direction: FuzzDirection
     mutation_count: int
     total_payloads: int
     payloads_sent: int
@@ -294,6 +354,9 @@ class PayloadBatchOut(BaseModel):
     campaign_id: int
     target_host: str
     target_port: int
+    protocol: FuzzProtocol
+    direction: FuzzDirection
+    source_ip: Optional[str] = None
     payloads: list[PayloadOut]
 
 

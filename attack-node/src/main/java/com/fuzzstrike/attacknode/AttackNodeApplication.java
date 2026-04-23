@@ -20,6 +20,7 @@
 package com.fuzzstrike.attacknode;
 
 import com.fuzzstrike.attacknode.client.NettyTcpClient;
+import com.fuzzstrike.attacknode.client.NettyUdpClient;
 import com.fuzzstrike.attacknode.client.PayloadDispatcher;
 import com.fuzzstrike.attacknode.service.C2ApiClient;
 
@@ -33,7 +34,7 @@ import org.slf4j.LoggerFactory;
  * <ol>
  *   <li>Read configuration from environment variables</li>
  *   <li>Wait for the C2 orchestrator to become reachable</li>
- *   <li>Initialize the Netty TCP client (EventLoopGroup)</li>
+ *   <li>Initialize the Netty TCP and UDP clients</li>
  *   <li>Create and start the PayloadDispatcher</li>
  *   <li>Register a JVM shutdown hook for graceful cleanup</li>
  * </ol>
@@ -51,7 +52,8 @@ public class AttackNodeApplication {
             
             ╔═══════════════════════════════════════════════════════╗
             ║       FuzzStrike Attack Node v1.0.0                  ║
-            ║       High-Throughput Async TCP Payload Engine        ║
+            ║       Multi-Protocol Async Payload Engine             ║
+            ║       TCP + UDP (DNS/DHCP/RADIUS/OSPF/LLDP)          ║
             ║       Powered by Netty 4.1 / Java 17                 ║
             ╚═══════════════════════════════════════════════════════╝
             """;
@@ -77,18 +79,30 @@ public class AttackNodeApplication {
         C2ApiClient c2Client = new C2ApiClient(c2BaseUrl, batchSize);
         waitForC2(c2Client);
 
-        // ── Step 3: Initialize Netty TCP client ───────────────────────
-        NettyTcpClient nettyClient = new NettyTcpClient(workerThreads);
+        // ── Step 3: Initialize Netty clients (TCP + UDP) ──────────────
+        NettyTcpClient tcpClient = new NettyTcpClient(workerThreads);
+
+        NettyUdpClient udpClient = new NettyUdpClient(workerThreads == 0 ? 4 : workerThreads);
+        try {
+            udpClient.init();
+        } catch (InterruptedException e) {
+            log.error("Failed to initialize UDP client: {}", e.getMessage());
+            Thread.currentThread().interrupt();
+            System.exit(1);
+        }
 
         // ── Step 4: Create the dispatcher ─────────────────────────────
-        PayloadDispatcher dispatcher = new PayloadDispatcher(c2Client, nettyClient, pollIntervalMs);
+        PayloadDispatcher dispatcher = new PayloadDispatcher(
+                c2Client, tcpClient, udpClient, pollIntervalMs
+        );
 
         // ── Step 5: Register shutdown hook ─────────────────────────────
         // This ensures graceful cleanup when Docker sends SIGTERM
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Shutdown signal received — cleaning up...");
             dispatcher.stop();
-            nettyClient.shutdown();
+            tcpClient.shutdown();
+            udpClient.shutdown();
             log.info("Shutdown complete. Goodbye!");
         }, "shutdown-hook"));
 

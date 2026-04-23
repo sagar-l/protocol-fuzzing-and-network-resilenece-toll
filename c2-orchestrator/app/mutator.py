@@ -383,27 +383,40 @@ def get_available_strategies() -> list[str]:
     return list(_STRATEGY_REGISTRY.keys())
 
 
-def mutate_seed(seed_json: str, count: int = 50) -> list[dict]:
+def mutate_seed(seed_json: str, count: int = 50, protocol: str = "tcp") -> list[dict]:
     """
-    Generate mutated payloads from a JSON seed string.
+    Generate mutated payloads from a seed, using the appropriate engine
+    based on the target protocol.
 
-    The engine randomly selects mutation strategies from the registry
-    and applies them to produce a diverse corpus of malformed inputs.
-    Each payload is tagged with the strategy that generated it.
+    For TCP: Uses the 10-strategy JSON mutation engine.
+    For DNS/DHCP/OSPF/LLDP/RADIUS: Uses protocol-specific binary generators.
 
     Args:
-        seed_json: The original payload as a JSON string.
+        seed_json: The original payload as a JSON string (used by TCP only).
         count: Number of mutated payloads to generate.
+        protocol: Target protocol (tcp, dns, dhcp, ospf, lldp, radius).
 
     Returns:
         list[dict]: Each dict contains:
-            - "content": The mutated payload as a JSON string
-            - "mutation_type": The strategy name used
-            - "size_bytes": The byte size of the mutated JSON
+            - "content": The mutated payload (JSON for TCP, hex for others)
+            - "mutation_type": The strategy/generator name used
+            - "size_bytes": The byte size of the payload
 
     Raises:
-        ValueError: If seed_json is not valid JSON.
+        ValueError: If seed_json is not valid JSON (TCP only).
     """
+    protocol = protocol.lower() if protocol else "tcp"
+
+    # ── Non-TCP protocols: delegate to binary packet generators ────────
+    if protocol != "tcp":
+        from app.protocol_generators import generate_protocol_packets
+        logger.info(
+            f"Protocol mode [{protocol.upper()}]: generating {count} "
+            f"malformed {protocol.upper()} packets"
+        )
+        return generate_protocol_packets(protocol, count)
+
+    # ── TCP mode: use existing JSON mutation strategies ─────────────────
     # Parse the seed — fail fast if it's not valid JSON
     try:
         seed_dict = json.loads(seed_json)
@@ -441,7 +454,6 @@ def mutate_seed(seed_json: str, count: int = 50) -> list[dict]:
 
         except Exception as e:
             # If a strategy fails, log it but don't halt the entire run.
-            # Robust fuzzing must tolerate individual mutation failures.
             logger.warning(
                 f"Strategy '{strategy_name}' failed on iteration {i}: {e}"
             )
@@ -463,3 +475,4 @@ def mutate_seed(seed_json: str, count: int = 50) -> list[dict]:
     )
 
     return results
+

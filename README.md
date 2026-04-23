@@ -106,4 +106,7 @@ jeevan/
 ## License
 
 MIT — For educational and authorized security testing purposes only.
+<<<<<<< HEAD
               **************
+=======
+>>>>>>> 7325ca3 (updatind all the files with new ones)

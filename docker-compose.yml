@@ -85,9 +85,11 @@ services:
     container_name: fuzzstrike-target
     ports:
       - "7777:7777"
+      - "5454:5454/udp"
     environment:
       - C2_TELEMETRY_URL=http://c2-orchestrator:9000/api/v1/telemetry/crash
       - TARGET_PORT=7777
+      - UDP_PORT=5454
       - MEMORY_POLL_INTERVAL_MS=500
     depends_on:
       c2-orchestrator:

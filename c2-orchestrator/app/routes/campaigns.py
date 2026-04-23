@@ -25,6 +25,7 @@ from app.models import (
     Campaign, CampaignCreate, CampaignOut, CampaignStatus,
     Payload, PayloadOut, PayloadBatchOut, PayloadStatus,
     DashboardMetrics, CrashReport, CrashReportOut,
+    FuzzProtocol, FuzzDirection,
 )
 from app.mutator import mutate_seed
 
@@ -44,12 +45,13 @@ def create_campaign(
 
     This endpoint:
     1. Creates the campaign record in the database.
-    2. Runs the mutation engine to generate N mutated payloads from the seed.
-    3. Stores all generated payloads with PENDING status.
+    2. Runs the mutation engine to generate mutated payloads from the seed.
+    3. Stores payloads in batches of 10,000 for memory efficiency at scale.
 
-    The campaign starts in CREATED status. Call /start to begin dispatching.
+    Supports up to 10 million payloads for high-volume protocol fuzzing.
     """
-    logger.info(f"Creating campaign: {campaign_in.name}")
+    logger.info(f"Creating campaign: {campaign_in.name} "
+                f"(protocol={campaign_in.protocol}, count={campaign_in.mutation_count:,})")
 
     # ── Step 1: Create the campaign record ─────────────────────────────
     campaign = Campaign(
@@ -57,45 +59,70 @@ def create_campaign(
         seed_payload=campaign_in.seed_payload,
         target_host=campaign_in.target_host,
         target_port=campaign_in.target_port,
+        source_ip=campaign_in.source_ip,
+        protocol=campaign_in.protocol,
+        direction=campaign_in.direction,
         mutation_count=campaign_in.mutation_count,
         status=CampaignStatus.CREATED,
     )
     db.add(campaign)
     db.flush()  # Get the auto-generated ID without committing
 
-    # ── Step 2: Generate mutated payloads ──────────────────────────────
+    campaign_id = campaign.id
+    protocol_val = campaign_in.protocol.value
+    total_count = campaign_in.mutation_count
+
+    # ── Step 2: Generate & store payloads in batches ───────────────────
+    # For large counts (millions), we generate in chunks of 10K to avoid
+    # holding millions of dicts in memory simultaneously.
+    BATCH_SIZE = 10_000
+    total_stored = 0
+    remaining = total_count
+
     try:
-        mutations = mutate_seed(
-            seed_json=campaign_in.seed_payload,
-            count=campaign_in.mutation_count,
-        )
+        while remaining > 0:
+            chunk_size = min(BATCH_SIZE, remaining)
+
+            # Generate a chunk of mutations
+            mutations = mutate_seed(
+                seed_json=campaign_in.seed_payload,
+                count=chunk_size,
+                protocol=protocol_val,
+            )
+
+            # Bulk insert this chunk
+            payload_objects = []
+            for mutation in mutations:
+                payload_objects.append(Payload(
+                    campaign_id=campaign_id,
+                    content=mutation["content"],
+                    mutation_type=mutation["mutation_type"],
+                    size_bytes=mutation["size_bytes"],
+                    status=PayloadStatus.PENDING,
+                ))
+
+            db.add_all(payload_objects)
+            db.flush()  # Write to DB immediately, free memory
+
+            total_stored += len(payload_objects)
+            remaining -= chunk_size
+
+            # Log progress every 100K payloads
+            if total_stored % 100_000 < BATCH_SIZE:
+                logger.info(f"  Campaign '{campaign_in.name}': {total_stored:,}/{total_count:,} payloads generated")
+
     except ValueError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
-    # ── Step 3: Store all payloads in the database ─────────────────────
-    payload_objects = []
-    for mutation in mutations:
-        payload = Payload(
-            campaign_id=campaign.id,
-            content=mutation["content"],
-            mutation_type=mutation["mutation_type"],
-            size_bytes=mutation["size_bytes"],
-            status=PayloadStatus.PENDING,
-        )
-        payload_objects.append(payload)
-
-    db.add_all(payload_objects)
-
-    # Update campaign aggregate counter
-    campaign.total_payloads = len(payload_objects)
-
+    # ── Step 3: Update campaign totals and commit ──────────────────────
+    campaign.total_payloads = total_stored
     db.commit()
     db.refresh(campaign)
 
     logger.info(
         f"Campaign '{campaign.name}' (ID={campaign.id}) created with "
-        f"{len(payload_objects)} mutated payloads"
+        f"{total_stored:,} mutated payloads"
     )
 
     return campaign
@@ -266,6 +293,9 @@ def get_payload_batch(
         campaign_id=campaign.id,
         target_host=campaign.target_host,
         target_port=campaign.target_port,
+        protocol=campaign.protocol,
+        direction=campaign.direction,
+        source_ip=campaign.source_ip,
         payloads=[PayloadOut.model_validate(p) for p in payloads],
     )
 

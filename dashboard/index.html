@@ -134,28 +134,55 @@
                 <form class="control-form" id="campaign-form" autocomplete="off">
                     <div class="form-group">
                         <label class="form-label" for="campaign-name">Campaign Name</label>
-                        <input type="text" class="form-input glass-input" id="campaign-name" placeholder="e.g., Auth Endpoint Fuzz #1" required>
+                        <input type="text" class="form-input glass-input" id="campaign-name" placeholder="e.g., DNS Fuzz Run #1" required>
                     </div>
 
                     <div class="form-group">
+                        <label class="form-label" for="fuzz-protocol">Protocol</label>
+                        <select class="form-input glass-input" id="fuzz-protocol">
+                            <option value="tcp">TCP — Raw JSON Mutation</option>
+                            <option value="dns">DNS — Malformed Queries (UDP/53)</option>
+                            <option value="dhcp">DHCP — Fuzzed Discover/Request (UDP/67)</option>
+                            <option value="ospf">OSPF — Corrupted Hello Packets</option>
+                            <option value="lldp">LLDP — Malformed TLV Frames</option>
+                            <option value="radius">RADIUS — Fuzzed Access-Request (UDP/1812)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="seed-payload-group">
                         <label class="form-label" for="seed-payload">Seed Payload (JSON)</label>
-                        <textarea class="form-textarea glass-input" id="seed-payload" rows="4" placeholder='{"username": "admin", "password": "secret", "role": 1}' required></textarea>
+                        <textarea class="form-textarea glass-input" id="seed-payload" rows="3" placeholder='{"username": "admin", "password": "secret", "role": 1}'></textarea>
                     </div>
 
                     <div class="form-row">
                         <div class="form-group form-group--half">
-                            <label class="form-label" for="target-host">Target Host</label>
-                            <input type="text" class="form-input glass-input" id="target-host" value="target" placeholder="hostname">
+                            <label class="form-label" for="target-host">Destination Host</label>
+                            <input type="text" class="form-input glass-input" id="target-host" value="target" placeholder="hostname or IP">
                         </div>
                         <div class="form-group form-group--half">
-                            <label class="form-label" for="target-port">Target Port</label>
+                            <label class="form-label" for="target-port">Destination Port</label>
                             <input type="number" class="form-input glass-input" id="target-port" value="7777" min="1" max="65535">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group form-group--half">
+                            <label class="form-label" for="source-ip">Source IP (Optional)</label>
+                            <input type="text" class="form-input glass-input" id="source-ip" placeholder="e.g., 192.168.1.10">
+                        </div>
+                        <div class="form-group form-group--half">
+                            <label class="form-label" for="fuzz-direction">Direction</label>
+                            <select class="form-input glass-input" id="fuzz-direction">
+                                <option value="src_to_dst">Source → Destination</option>
+                                <option value="dst_to_src">Destination → Source</option>
+                                <option value="bidirectional">Bidirectional</option>
+                            </select>
                         </div>
                     </div>
 
                     <div class="form-group">
                         <label class="form-label" for="mutation-count">Mutation Count</label>
-                        <input type="range" class="form-range" id="mutation-count" min="10" max="500" value="50" step="10">
+                        <input type="range" class="form-range" id="mutation-count" min="1" max="100" value="10" step="1">
                         <div class="form-range-value"><span id="mutation-count-display">50</span> payloads</div>
                     </div>
 

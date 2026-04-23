@@ -1,27 +1,27 @@
 # ============================================================================
-# FuzzStrike Target Environment — Vulnerable TCP Server
+# FuzzStrike Target Environment — Vulnerable TCP/UDP Server
 # ============================================================================
-# An INTENTIONALLY VULNERABLE TCP server designed to simulate a real-world
+# An INTENTIONALLY VULNERABLE server designed to simulate a real-world
 # target application with exploitable weaknesses.
 #
 # Vulnerability Profile:
-#   1. OutOfMemoryError when payload exceeds 1MB (primary crash trigger)
+#   1. OutOfMemoryError when payload exceeds 1MB (TCP)
 #   2. No input validation or sanitization
 #   3. Unbounded buffer accumulation
-#   4. Single-threaded — one bad payload blocks all connections
+#   4. DNS label parsing crash on oversized labels (UDP)
+#   5. DHCP magic cookie validation crash (UDP)
+#   6. Protocol parser crashes on malformed packets (UDP)
 #
-# Protocol:
-#   - Accepts raw TCP connections on TARGET_PORT (default: 7777)
-#   - Reads incoming data until the client closes the connection
-#   - Attempts to parse the data as JSON
-#   - Sends back a simple ACK or ERROR response
-#   - Crashes spectacularly on payloads > 1MB
+# Protocols:
+#   - TCP (port 7777) — Raw JSON payload processing
+#   - UDP (port 5353) — DNS/DHCP/RADIUS packet processing
 #
 # WARNING: This server is INTENTIONALLY insecure. It exists solely to be
 # fuzzed. Never deploy this in any environment other than an isolated
 # Docker container within the FuzzStrike test network.
 # ============================================================================
 
+import struct
 import json
 import os
 import signal
@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 
 # ── Configuration ──────────────────────────────────────────────────────────
 TARGET_PORT = int(os.environ.get("TARGET_PORT", 7777))
+UDP_PORT = int(os.environ.get("UDP_PORT", 5353))
 BIND_HOST = "0.0.0.0"
 
 # The size threshold that triggers a simulated OutOfMemoryError.
@@ -284,51 +285,177 @@ def handle_connection(client_socket: socket.socket, address: tuple):
             pass
 
 
+# ── UDP Protocol Packet Processing (Intentionally Vulnerable) ─────────────
+
+def process_protocol_packet(data: bytes, addr: tuple) -> bytes:
+    """
+    Process a raw binary protocol packet. This simulates a network device
+    that parses DNS/DHCP/RADIUS packets with intentional vulnerabilities.
+
+    Vulnerabilities:
+        - DNS: Crashes on labels > 63 bytes (spec violation)
+        - DHCP: Crashes on invalid magic cookie
+        - Generic: Crashes on packets > 64KB
+    """
+    global LAST_PAYLOAD, LAST_PAYLOAD_SIZE
+
+    packet_size = len(data)
+    LAST_PAYLOAD_SIZE = packet_size
+    LAST_PAYLOAD = data.hex()[:10240]
+
+    log("INFO", f"UDP packet from {addr[0]}:{addr[1]} — {packet_size} bytes")
+
+    write_state({
+        "status": "processing_udp",
+        "payload_size": packet_size,
+        "source": f"{addr[0]}:{addr[1]}",
+    })
+
+    # ══════════════════════════════════════════════════════════════════
+    # VULNERABILITY: Crash on oversized packets (> 64KB)
+    # ══════════════════════════════════════════════════════════════════
+    if packet_size > 65535:
+        log("ERROR", f"!!! UDP PACKET TOO LARGE: {packet_size} bytes !!!")
+        write_state({
+            "status": "crashed",
+            "error_type": "BufferOverflowError",
+            "error_message": f"UDP packet of {packet_size} bytes exceeded 64KB limit",
+        })
+        os._exit(139)  # SIGSEGV simulation
+
+    # ── Try DNS parsing ─────────────────────────────────────────────
+    if packet_size >= 12:
+        try:
+            # Parse DNS header
+            txn_id, flags, qd_count = struct.unpack("!HHH", data[:6])
+
+            # Parse question section labels
+            offset = 12
+            while offset < len(data):
+                label_len = data[offset]
+                if label_len == 0:
+                    break  # End of domain name
+
+                # VULNERABILITY: Crash on labels > 63 bytes
+                # RFC 1035 says max label is 63 bytes. Real parsers crash here.
+                if label_len > 63:
+                    log("ERROR", f"!!! DNS LABEL OVERFLOW: label_len={label_len} > 63 !!!")
+                    write_state({
+                        "status": "crashed",
+                        "error_type": "DNSLabelOverflow",
+                        "error_message": f"DNS label length {label_len} exceeds max 63 bytes",
+                    })
+                    os._exit(134)  # SIGABRT simulation
+
+                offset += 1 + label_len
+
+            log("INFO", f"DNS query parsed: txn_id={txn_id:#06x}, questions={qd_count}")
+            return struct.pack("!HH", txn_id, 0x8180)  # Valid response flags
+
+        except (struct.error, IndexError):
+            log("WARN", "Malformed DNS packet — parse failed")
+
+    # ── Try DHCP parsing ────────────────────────────────────────────
+    if packet_size >= 240:
+        try:
+            # Check DHCP magic cookie at offset 236
+            cookie = data[236:240]
+            valid_cookie = b"\x63\x82\x53\x63"
+
+            if cookie != valid_cookie:
+                # VULNERABILITY: Crash on invalid magic cookie
+                log("ERROR", f"!!! DHCP INVALID MAGIC COOKIE: {cookie.hex()} !!!")
+                write_state({
+                    "status": "crashed",
+                    "error_type": "DHCPMagicCookieError",
+                    "error_message": f"Invalid DHCP magic cookie: {cookie.hex()}",
+                })
+                os._exit(136)  # Simulated crash
+
+            log("INFO", f"DHCP packet parsed: op={data[0]}, htype={data[1]}")
+            return b"\x02"  # BOOTREPLY
+
+        except (IndexError, struct.error):
+            log("WARN", "Malformed DHCP packet — parse failed")
+
+    # ── Generic binary response ─────────────────────────────────────
+    write_state({"status": "healthy", "payload_size": packet_size})
+    return b"ACK"
+
+
+def run_udp_server():
+    """
+    Run the UDP server for protocol-specific packet processing.
+    Handles DNS, DHCP, and RADIUS fuzzed packets.
+    """
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    try:
+        udp_socket.bind((BIND_HOST, UDP_PORT))
+        log("INFO", f"UDP server listening on {BIND_HOST}:{UDP_PORT}")
+
+        while True:
+            try:
+                data, addr = udp_socket.recvfrom(65536)
+                if data:
+                    response = process_protocol_packet(data, addr)
+                    if response:
+                        udp_socket.sendto(response, addr)
+            except Exception as e:
+                log("ERROR", f"UDP error: {e}")
+
+    except OSError as e:
+        log("ERROR", f"Failed to bind UDP to {BIND_HOST}:{UDP_PORT}: {e}")
+    finally:
+        udp_socket.close()
+
+
 # ── Main Server Loop ───────────────────────────────────────────────────────
 
 def main():
     """
-    Start the vulnerable TCP server.
-
-    Binds to BIND_HOST:TARGET_PORT and accepts connections in a loop.
-    Each connection is handled in a separate thread (intentionally
-    unbounded thread creation — another vulnerability).
+    Start both TCP and UDP vulnerable servers.
+    TCP handles raw JSON payloads, UDP handles protocol packets.
     """
     log("INFO", "=" * 55)
     log("INFO", "FuzzStrike Vulnerable Target Server v1.0.0")
-    log("INFO", f"  Listening on {BIND_HOST}:{TARGET_PORT}")
+    log("INFO", f"  TCP Listening on {BIND_HOST}:{TARGET_PORT}")
+    log("INFO", f"  UDP Listening on {BIND_HOST}:{UDP_PORT}")
     log("INFO", f"  Crash threshold: {CRASH_THRESHOLD_BYTES:,} bytes (1 MB)")
     log("INFO", f"  PID: {SERVER_PID}")
     log("INFO", "  ⚠️  THIS SERVER IS INTENTIONALLY VULNERABLE")
+    log("INFO", "  Supported: TCP, DNS, DHCP, OSPF, LLDP, RADIUS")
     log("INFO", "=" * 55)
 
     # Write initial state
     write_state({"status": "starting"})
 
-    # Create the TCP server socket
+    # ── Start UDP server in a background thread ────────────────────
+    udp_thread = threading.Thread(target=run_udp_server, daemon=True)
+    udp_thread.start()
+    log("INFO", "UDP protocol server started in background thread")
+
+    # ── Start TCP server (main thread) ─────────────────────────────
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     try:
         server_socket.bind((BIND_HOST, TARGET_PORT))
-        server_socket.listen(128)  # Backlog of 128 pending connections
+        server_socket.listen(128)
 
-        log("INFO", f"Server listening on {BIND_HOST}:{TARGET_PORT}")
+        log("INFO", f"TCP server listening on {BIND_HOST}:{TARGET_PORT}")
         write_state({"status": "healthy"})
 
-        # Accept connections forever
         while True:
             try:
                 client_socket, address = server_socket.accept()
-
-                # Handle each connection in a new thread
                 thread = threading.Thread(
                     target=handle_connection,
                     args=(client_socket, address),
                     daemon=True,
                 )
                 thread.start()
-
             except KeyboardInterrupt:
                 log("INFO", "Server shutting down (KeyboardInterrupt)")
                 break
@@ -336,7 +463,7 @@ def main():
                 log("ERROR", f"Error accepting connection: {e}")
 
     except OSError as e:
-        log("ERROR", f"Failed to bind to {BIND_HOST}:{TARGET_PORT}: {e}")
+        log("ERROR", f"Failed to bind TCP to {BIND_HOST}:{TARGET_PORT}: {e}")
         sys.exit(1)
     finally:
         server_socket.close()

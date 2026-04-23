@@ -53,7 +53,10 @@ public class PayloadDispatcher {
     private final C2ApiClient c2Client;
 
     /** Netty TCP client for firing payloads at the target */
-    private final NettyTcpClient nettyClient;
+    private final NettyTcpClient nettyTcpClient;
+
+    /** Netty UDP client for firing protocol packets (DNS, DHCP, RADIUS) */
+    private final NettyUdpClient nettyUdpClient;
 
     /** Time between polling attempts (milliseconds) */
     private final long pollIntervalMs;
@@ -66,13 +69,16 @@ public class PayloadDispatcher {
     /**
      * Create a new PayloadDispatcher.
      *
-     * @param c2Client       Client for C2 API communication
-     * @param nettyClient    Netty TCP client for payload delivery
-     * @param pollIntervalMs Milliseconds between C2 polling attempts
+     * @param c2Client        Client for C2 API communication
+     * @param nettyTcpClient  Netty TCP client for TCP payload delivery
+     * @param nettyUdpClient  Netty UDP client for protocol packet delivery
+     * @param pollIntervalMs  Milliseconds between C2 polling attempts
      */
-    public PayloadDispatcher(C2ApiClient c2Client, NettyTcpClient nettyClient, long pollIntervalMs) {
+    public PayloadDispatcher(C2ApiClient c2Client, NettyTcpClient nettyTcpClient,
+                             NettyUdpClient nettyUdpClient, long pollIntervalMs) {
         this.c2Client = c2Client;
-        this.nettyClient = nettyClient;
+        this.nettyTcpClient = nettyTcpClient;
+        this.nettyUdpClient = nettyUdpClient;
         this.pollIntervalMs = pollIntervalMs;
     }
 
@@ -165,8 +171,15 @@ public class PayloadDispatcher {
             log.info("Processing campaign {}: {} payloads in batch",
                     campaignId, batch.size());
 
-            // Dispatch the batch via Netty
-            ResponseCollector collector = nettyClient.fireBatch(batch);
+            // Dispatch the batch via the appropriate Netty client
+            ResponseCollector collector;
+            if (batch.isUdpProtocol()) {
+                log.info("Routing batch via UDP client (protocol: {})", batch.getProtocol());
+                collector = nettyUdpClient.fireBatch(batch);
+            } else {
+                log.info("Routing batch via TCP client (protocol: {})", batch.getProtocol());
+                collector = nettyTcpClient.fireBatch(batch);
+            }
 
             // Build the ACK lists from the results
             List<Integer> deliveredIds = collector.getDeliveredPayloadIds();

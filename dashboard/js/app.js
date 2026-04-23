@@ -108,9 +108,9 @@ const API = {
     async request(endpoint, options = {}) {
         const url = `${CONFIG.API_BASE}${endpoint}`;
 
-        // AbortController with 5-second timeout prevents hung requests
+        // AbortController with 10-second timeout prevents hung requests
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
 
         const defaults = {
             headers: {
@@ -154,10 +154,37 @@ const API = {
 
     // ── Campaigns ────────────────────────────────────────────────────
     async createCampaign(data) {
-        return this.request('/campaigns/', {
-            method: 'POST',
-            body: JSON.stringify(data),
-        });
+        // Campaign creation can take minutes for millions of payloads.
+        // Use a dedicated 5-minute timeout instead of the default 10s.
+        const url = `${CONFIG.API_BASE}/campaigns/`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes
+
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify(data),
+                signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                const errorBody = await response.text();
+                throw new Error(`HTTP ${response.status}: ${errorBody}`);
+            }
+
+            return response.json();
+        } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') {
+                throw new Error('Campaign creation timed out (server may still be generating payloads)');
+            }
+            throw err;
+        }
     },
 
     async startCampaign(id) {
@@ -494,8 +521,12 @@ class DashboardApp {
             form: document.getElementById('campaign-form'),
             campaignName: document.getElementById('campaign-name'),
             seedPayload: document.getElementById('seed-payload'),
+            seedPayloadGroup: document.getElementById('seed-payload-group'),
             targetHost: document.getElementById('target-host'),
             targetPort: document.getElementById('target-port'),
+            sourceIp: document.getElementById('source-ip'),
+            fuzzProtocol: document.getElementById('fuzz-protocol'),
+            fuzzDirection: document.getElementById('fuzz-direction'),
             mutationCount: document.getElementById('mutation-count'),
             mutationCountDisplay: document.getElementById('mutation-count-display'),
             btnCreate: document.getElementById('btn-create-campaign'),
@@ -532,10 +563,53 @@ class DashboardApp {
             this.stopCampaign();
         });
 
-        // Mutation count slider
-        this.dom.mutationCount.addEventListener('input', (e) => {
-            this.dom.mutationCountDisplay.textContent = e.target.value;
+        // Protocol change — show/hide seed payload + auto-set port
+        const PROTO_PORTS = {
+            tcp: 7777, dns: 5454, dhcp: 5454, ospf: 7777,
+            lldp: 7777, radius: 5454,
+        };
+        this.dom.fuzzProtocol.addEventListener('change', (e) => {
+            const proto = e.target.value;
+            const isTcp = proto === 'tcp';
+
+            // Show seed payload only for TCP (JSON mutation)
+            this.dom.seedPayloadGroup.style.display = isTcp ? 'block' : 'none';
+
+            // Auto-set the port based on protocol
+            this.dom.targetPort.value = PROTO_PORTS[proto] || 7777;
         });
+
+        // Logarithmic mutation count slider: 1-100 → 10 to 10,000,000
+        const logScale = (val) => {
+            // Maps 1-100 to 10 - 10,000,000 on a log scale
+            const minLog = Math.log10(10);
+            const maxLog = Math.log10(10000000);
+            const scale = minLog + (val / 100) * (maxLog - minLog);
+            return Math.round(Math.pow(10, scale));
+        };
+
+        const formatCount = (n) => {
+            if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+            if (n >= 1000) return (n / 1000).toFixed(0) + 'K';
+            return n.toString();
+        };
+
+        // Set initial display
+        this.dom.mutationCountDisplay.textContent = formatCount(
+            logScale(parseInt(this.dom.mutationCount.value))
+        );
+
+        this.dom.mutationCount.addEventListener('input', (e) => {
+            const count = logScale(parseInt(e.target.value));
+            this.dom.mutationCountDisplay.textContent = formatCount(count);
+            // Store actual value as data attribute for form submission
+            this.dom.mutationCount.dataset.actualValue = count;
+        });
+
+        // Store initial actual value
+        this.dom.mutationCount.dataset.actualValue = logScale(
+            parseInt(this.dom.mutationCount.value)
+        );
     }
 
     // ── C2 Connection ─────────────────────────────────────────────────
@@ -807,18 +881,23 @@ class DashboardApp {
 
     async createAndStartCampaign() {
         const name = this.dom.campaignName.value.trim();
+        const protocol = this.dom.fuzzProtocol.value;
         const seedPayload = this.dom.seedPayload.value.trim();
         const targetHost = this.dom.targetHost.value.trim() || 'target';
         const targetPort = parseInt(this.dom.targetPort.value) || 7777;
-        const mutationCount = parseInt(this.dom.mutationCount.value) || 50;
+        const sourceIp = this.dom.sourceIp.value.trim() || null;
+        const direction = this.dom.fuzzDirection.value;
+        const mutationCount = parseInt(this.dom.mutationCount.dataset.actualValue) || 50;
 
-        // Validate seed is valid JSON
-        try {
-            JSON.parse(seedPayload);
-        } catch {
-            Toast.error('Invalid JSON in seed payload. Please check the syntax.');
-            this.dom.seedPayload.focus();
-            return;
+        // Validate seed is valid JSON (only for TCP protocol)
+        if (protocol === 'tcp') {
+            try {
+                JSON.parse(seedPayload);
+            } catch {
+                Toast.error('Invalid JSON in seed payload. Please check the syntax.');
+                this.dom.seedPayload.focus();
+                return;
+            }
         }
 
         if (!name) {
@@ -833,30 +912,39 @@ class DashboardApp {
 
         try {
             // Step 1: Create campaign (generates mutations)
-            Toast.info(`Creating campaign "${name}" with ${mutationCount} mutations...`);
+            const countLabel = mutationCount >= 1000000
+                ? `${(mutationCount / 1000000).toFixed(1)}M`
+                : mutationCount >= 1000
+                    ? `${(mutationCount / 1000).toFixed(0)}K`
+                    : mutationCount;
+
+            Toast.info(`Creating ${protocol.toUpperCase()} campaign "${name}" with ${countLabel} mutations...`);
 
             const campaign = await API.createCampaign({
                 name,
-                seed_payload: seedPayload,
+                seed_payload: protocol === 'tcp' ? seedPayload : '{"fuzz": true}',
                 target_host: targetHost,
                 target_port: targetPort,
+                source_ip: sourceIp,
+                protocol: protocol,
+                direction: direction,
                 mutation_count: mutationCount,
             });
 
-            Toast.success(`Campaign "${name}" created with ${campaign.total_payloads} payloads!`);
+            Toast.success(`Campaign "${name}" created with ${campaign.total_payloads.toLocaleString()} ${protocol.toUpperCase()} payloads!`);
 
             // Step 2: Start the campaign
             await API.startCampaign(campaign.id);
             this.activeCampaignId = campaign.id;
 
-            Toast.success(`Campaign "${name}" started! Attack in progress...`);
+            Toast.success(`Campaign "${name}" started! ${protocol.toUpperCase()} attack in progress...`);
 
             // Update UI
             this.dom.activeCampaignEl.style.display = 'block';
-            this.dom.activeCampaignName.textContent = name;
+            this.dom.activeCampaignName.textContent = `${name} [${protocol.toUpperCase()}]`;
             this.dom.btnStop.disabled = false;
             this.dom.campaignProgress.style.width = '0%';
-            this.dom.campaignProgressLabel.textContent = `0/${campaign.total_payloads} payloads`;
+            this.dom.campaignProgressLabel.textContent = `0/${campaign.total_payloads.toLocaleString()} payloads`;
 
             // Reset start time for throughput calculation
             this.startTime = Date.now();

@@ -33,8 +33,17 @@ public class PayloadBatch {
     /** Target host to send payloads to */
     private String target_host;
 
-    /** Target TCP port */
+    /** Target port */
     private int target_port;
+
+    /** Protocol to fuzz (tcp, dns, dhcp, ospf, lldp, radius) */
+    private String protocol;
+
+    /** Traffic direction (src_to_dst, dst_to_src, bidirectional) */
+    private String direction;
+
+    /** Source IP address (optional) */
+    private String source_ip;
 
     /** The individual payloads in this batch */
     private List<PayloadItem> payloads;
@@ -76,6 +85,17 @@ public class PayloadBatch {
     public int getCampaignId() { return campaign_id; }
     public String getTargetHost() { return target_host; }
     public int getTargetPort() { return target_port; }
+    public String getProtocol() { return protocol != null ? protocol : "tcp"; }
+    public String getDirection() { return direction != null ? direction : "src_to_dst"; }
+    public String getSourceIp() { return source_ip; }
+
+    /**
+     * Check if this batch uses a UDP-based protocol.
+     */
+    public boolean isUdpProtocol() {
+        String proto = getProtocol().toLowerCase();
+        return proto.equals("dns") || proto.equals("dhcp") || proto.equals("radius");
+    }
 
     /**
      * Returns a defensive copy of the payload list.
@@ -105,8 +125,8 @@ public class PayloadBatch {
     @Override
     public String toString() {
         return String.format(
-            "PayloadBatch{campaign=%d, target='%s:%d', payloads=%d}",
-            campaign_id, target_host, target_port, size()
+            "PayloadBatch{campaign=%d, target='%s:%d', protocol='%s', direction='%s', payloads=%d}",
+            campaign_id, target_host, target_port, getProtocol(), getDirection(), size()
         );
     }
 }
